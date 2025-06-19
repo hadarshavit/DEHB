@@ -275,6 +275,8 @@ class DE(DEBase):
         self.encoding = encoding
         self.dim_map = dim_map
         self._set_min_pop_size()
+        # For ask-tell interface
+        self._ask_queue = []  # Stores (target_idx, trial, trial_id)
 
     def __getstate__(self):
         """ Allows the object to picklable while having Dask client as a class attribute.
@@ -851,6 +853,132 @@ class AsyncDE(DE):
                 history.extend(de_history)
 
         return traj, runtime, history
+
+    def ask(self, fidelity=None, **kwargs):
+        """
+        Generate a new candidate solution (offspring) to be evaluated externally.
+        Returns a tuple (config, trial_id, target_idx) for use in tell().
+        """
+        assert len(self._ask_queue) == 0, "Previous ask() calls have not been told yet. Please call tell() before asking again."
+        
+        if not hasattr(self, 'population') or self.population is None:
+            # If population is not initialized, initialize and evaluate it
+            self.reset()
+            self.init_eval_pop(fidelity=fidelity, eval=False, **kwargs)
+            self.init = True
+        
+        # Select a target index (round-robin or random)
+        if not hasattr(self, '_ask_counter'):
+            self._ask_counter = 0
+        
+        if not hasattr(self, 'init'):
+            self.init = False
+
+        if self.init:
+            # Round-robin selection for first pop_size calls
+            target_idx = self._ask_counter % self.pop_size
+            trial = self.population[target_idx]
+            trial_id = self.population_ids[target_idx]
+            self._ask_counter += 1
+            if self._ask_counter >= self.pop_size:
+                self.init = False
+        else:
+            if self.async_strategy == 'worst':
+                raise NotImplementedError("Worst strategy is not supported in ask() method. Use evolve_generation() instead.")
+            elif self.async_strategy == 'random':
+                raise NotImplementedError("Random strategy is not supported in ask() method. Use evolve_generation() instead.")
+            elif self.async_strategy == 'deferred':
+                if not hasattr(self, 'trials') or len(self.trials) == 0 or self.cur_trial_idx >= len(self.trials):
+                    self.trials = []
+                    self.trial_ids = []
+                    for j in range(self.pop_size):
+                        target = self.population[j]
+                        donor = self.mutation(current=target, best=self.inc_config)
+                        trial = self.crossover(target, donor)
+                        trial = self.boundary_check(trial)
+                        trial_id = self.config_repository.announce_config(trial, float(fidelity or 0))
+                        self.trials.append(trial)
+                        self.trial_ids.append(trial_id)
+                    # selection takes place on a separate trial population only after
+                    # one iteration through the population has taken place
+                    self.trials = np.array(self.trials)
+                    self.cur_trial_idx = 0
+                trial = self.trials[self.cur_trial_idx]
+                trial_id = self.trial_ids[self.cur_trial_idx]
+                target_idx = self.cur_trial_idx
+                self.cur_trial_idx += 1
+
+            elif self.async_strategy == 'immediate':
+                raise NotImplementedError("Immediate strategy is not supported in ask() method. Use evolve_generation() instead.")
+            else:
+                raise ValueError(f"Unknown async_strategy: {self.async_strategy}")
+
+        # Store context for tell
+        self._ask_queue.append((trial, trial_id))
+
+        if self.encoding:
+            x = self.map_to_original(trial)
+        else:
+            x = trial
+
+        # Only convert config if configspace is used + configuration has not been converted yet
+        if self.configspace:
+            if not isinstance(x, ConfigSpace.Configuration):
+                # converts [0, 1] vector to a ConfigSpace object
+                config = self.vector_to_configspace(x)
+            else:
+                config = x
+        else:
+            config = x.copy()
+        return config, trial_id, target_idx
+
+    def tell(self, candidate, target_idx, result, fidelity=None, **kwargs):
+        """
+        Accept a candidate and its evaluation result, updating the optimizer's state.
+        result should be a dict with at least 'fitness' and 'cost'.
+        """
+        if self.configspace:
+            candidate = self.configspace_to_vector(candidate)
+        if self.encoding:
+            candidate = self.map_to_original(candidate)
+        # Find the matching ask context
+        match_idx = None
+        for i, (trial, trial_id) in enumerate(self._ask_queue):
+            if np.allclose(candidate, trial):
+                match_idx = i
+                break
+        if match_idx is None:
+            raise ValueError("Candidate not found in ask queue. Make sure to use the output of ask().")
+        trial, trial_id = self._ask_queue.pop(match_idx)
+        fitness = result["fitness"]
+        cost = result["cost"]
+        info = result["info"] if "info" in result else dict()
+        # Log result to config repo
+        self.config_repository.tell_result(trial_id, float(fidelity or 0), fitness, cost, info)
+        # Selection: replace parent if offspring is better or equal
+        if fitness <= self.fitness[target_idx]:
+            self.population[target_idx] = trial
+            self.population_ids[target_idx] = trial_id
+            self.fitness[target_idx] = fitness
+            self.age[target_idx] = self.max_age
+        else:
+            self.age[target_idx] -= 1
+        # Update global incumbent: always scan the population for the best
+        best_idx = np.argmin(self.fitness)
+        self.inc_score = self.fitness[best_idx]
+        self.inc_config = self.population[best_idx]
+        self.inc_id = self.population_ids[best_idx]
+        # Update trajectory/history
+        if not hasattr(self, 'traj'):
+            self.traj = []
+        if not hasattr(self, 'runtime'):
+            self.runtime = []
+        if not hasattr(self, 'history'):
+            self.history = []
+        self.traj.append(self.inc_score)
+        self.runtime.append(cost)
+        self.history.append((trial.tolist(), float(fitness), float(fidelity or 0), info))
+        return None
 
     def run(self, generations=1, verbose=False, fidelity=None, reset=True, **kwargs):
         # checking if a run exists
