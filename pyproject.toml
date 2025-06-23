@@ -6,13 +6,8 @@ urls = { Documentation = "https://automl.github.io/DEHB/", Github = "https://git
 name = "DEHB"
 version = "0.1.2"
 dependencies = [
-  "numpy>=1.18.2,<2.0",
   "loguru>=0.5.3",
-  "dask>=2.27.0",
-  "distributed>=2.27.0",
-  "ConfigSpace>=0.4.16",
-  "pandas>=1.2.4",
-  "pyarrow>=16.1.0"
+
 ]
 classifiers = [
   "Programming Language :: Python :: 3.8",
