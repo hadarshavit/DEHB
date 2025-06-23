@@ -651,9 +651,6 @@ class DE(DEBase):
             target_idx = self.cur_trial_idx
             self.cur_trial_idx += 1
 
-        # Store context for tell
-        self._ask_queue.append((trial, trial_id))
-
         if self.encoding:
             x = self.map_to_original(trial)
         else:
@@ -670,24 +667,16 @@ class DE(DEBase):
             config = x.copy()
         return config, trial_id, target_idx
 
-    def tell(self, candidate, target_idx, result, fidelity=None, **kwargs):
+    def tell(self, trial, trial_id, target_idx, result, fidelity=None, **kwargs):
         """
         Accept a candidate and its evaluation result, updating the optimizer's state.
         result should be a dict with at least 'fitness' and 'cost'.
         """
         if self.configspace:
-            candidate = self.configspace_to_vector(candidate)
+            trial = self.configspace_to_vector(trial)
         if self.encoding:
-            candidate = self.map_to_original(candidate)
-        # Find the matching ask context
-        match_idx = None
-        for i, (trial, trial_id) in enumerate(self._ask_queue):
-            if np.allclose(candidate, trial):
-                match_idx = i
-                break
-        if match_idx is None:
-            raise ValueError("Candidate not found in ask queue. Make sure to use the output of ask().")
-        trial, trial_id = self._ask_queue.pop(match_idx)
+            trial = self.map_to_original(trial)
+        
         fitness = result["fitness"]
         cost = result["cost"]
         info = result["info"] if "info" in result else dict()

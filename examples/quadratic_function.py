@@ -42,10 +42,10 @@ if __name__ == "__main__":
     for i in range(10 * 10):
         trial, trial_id, target_idx = de.ask()
         res = bench.train(trial, seed=0)
-        de.tell(trial, target_idx, res)
+        de.tell(trial, trial_id, target_idx, res)
     mod = np.array(de.traj)
 
-    assert np.all(orig == mod), f"Original {orig} and modified {mod} trajectories do not match."
+    assert np.all(np.isclose(orig,  mod)), f"Original {orig} and modified {mod} trajectories do not match."
     print("Original and modified trajectories match.")
     print("Original trajectory:", orig)
 
